@@ -1,30 +1,272 @@
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+// Keep the FIRST line of your own MainActivity.kt (the "package ..." line)
+// and paste everything below it, replacing the rest of the file.
 
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <application
-        android:name=".App"
-        android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication"
-        tools:targetApi="31">
-        <activity
-            android:name=".ui.activitys.MainActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyApplication">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.math.BigDecimal
+import java.math.MathContext
+import kotlin.math.*
 
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    CalculatorScreen()
+                }
+            }
+        }
+    }
+}
 
-</manifest>
+// ---------- Expression parser ----------
+// Supports: + - × ÷ ^ ! % ( ) π e sin cos tan asin acos atan log ln sqrt
+class Parser(private val s: String, private val deg: Boolean) {
+    private var pos = 0
+
+    fun parse(): Double {
+        val v = expr()
+        if (pos != s.length) throw IllegalArgumentException("Unexpected input")
+        return v
+    }
+
+    private fun peek(): Char? = if (pos < s.length) s[pos] else null
+
+    private fun expr(): Double {
+        var v = term()
+        while (true) {
+            when (peek()) {
+                '+' -> { pos++; v += term() }
+                '-' -> { pos++; v -= term() }
+                else -> return v
+            }
+        }
+    }
+
+    private fun term(): Double {
+        var v = factor()
+        while (true) {
+            val c = peek()
+            when {
+                c == '×' -> { pos++; v *= factor() }
+                c == '÷' -> { pos++; v /= factor() }
+                // implicit multiplication, e.g. 2π or 3(4+1)
+                c != null && (c.isDigit() || c == '.' || c == '(' || c.isLetter()) -> v *= factor()
+                else -> return v
+            }
+        }
+    }
+
+    private fun factor(): Double = when (peek()) {
+        '-' -> { pos++; -factor() }
+        '+' -> { pos++; factor() }
+        else -> power()
+    }
+
+    private fun power(): Double {
+        val base = postfix()
+        return if (peek() == '^') { pos++; base.pow(factor()) } else base
+    }
+
+    private fun postfix(): Double {
+        var v = primary()
+        while (true) {
+            when (peek()) {
+                '!' -> { pos++; v = factorial(v) }
+                '%' -> { pos++; v /= 100.0 }
+                else -> return v
+            }
+        }
+    }
+
+    private fun primary(): Double {
+        val c = peek() ?: throw IllegalArgumentException("Unexpected end")
+        if (c == '(') {
+            pos++
+            val v = expr()
+            if (peek() == ')') pos++ // a missing closing bracket is allowed
+            return v
+        }
+        if (c.isDigit() || c == '.') {
+            val start = pos
+            while (pos < s.length && (s[pos].isDigit() || s[pos] == '.')) pos++
+            // exponent part such as 1E+12 (used when a result is chained)
+            if (pos + 1 < s.length && s[pos] == 'E' &&
+                (s[pos + 1].isDigit() || s[pos + 1] == '+' || s[pos + 1] == '-')
+            ) {
+                pos += 2
+                while (pos < s.length && s[pos].isDigit()) pos++
+            }
+            return s.substring(start, pos).toDouble()
+        }
+        if (c == 'π') { pos++; return PI }
+        val funcs = listOf("asin(", "acos(", "atan(", "sin(", "cos(", "tan(", "sqrt(", "log(", "ln(")
+        for (f in funcs) {
+            if (s.startsWith(f, pos)) {
+                pos += f.length
+                val arg = expr()
+                if (peek() == ')') pos++
+                return callFunction(f.dropLast(1), arg)
+            }
+        }
+        if (c == 'e') { pos++; return E }
+        throw IllegalArgumentException("Unexpected character")
+    }
+
+    private fun callFunction(name: String, x: Double): Double {
+        val rad = if (deg) Math.toRadians(x) else x
+        return when (name) {
+            "sin" -> sin(rad)
+            "cos" -> cos(rad)
+            "tan" -> tan(rad)
+            "asin" -> fromRad(asin(x))
+            "acos" -> fromRad(acos(x))
+            "atan" -> fromRad(atan(x))
+            "log" -> log10(x)
+            "ln" -> ln(x)
+            "sqrt" -> sqrt(x)
+            else -> throw IllegalArgumentException("Unknown function")
+        }
+    }
+
+    private fun fromRad(r: Double): Double = if (deg) Math.toDegrees(r) else r
+
+    private fun factorial(x: Double): Double {
+        if (x < 0 || x != floor(x) || x > 170) throw ArithmeticException("Invalid factorial")
+        var r = 1.0
+        for (i in 2..x.toInt()) r = r * i
+        return r
+    }
+}
+
+fun formatNumber(v: Double): String {
+    if (v.isNaN() || v.isInfinite()) throw ArithmeticException("Invalid result")
+    val r = if (abs(v) < 1e-12) 0.0 else v
+    val bd = BigDecimal(r).round(MathContext(10)).stripTrailingZeros()
+    return if (abs(r) >= 1e10 || (r != 0.0 && abs(r) < 1e-6)) bd.toString() else bd.toPlainString()
+}
+
+// ---------- UI ----------
+data class CalcKey(val label: String, val insert: String = label)
+
+@Composable
+fun keyColors(insert: String): ButtonColors {
+    val c = MaterialTheme.colorScheme
+    return when {
+        insert == "=" -> ButtonDefaults.buttonColors(
+            containerColor = c.primary, contentColor = c.onPrimary
+        )
+        insert.length == 1 && (insert[0].isDigit() || insert == ".") -> ButtonDefaults.buttonColors(
+            containerColor = c.surfaceVariant, contentColor = c.onSurfaceVariant
+        )
+        insert in setOf("+", "-", "×", "÷") -> ButtonDefaults.buttonColors(
+            containerColor = c.tertiaryContainer, contentColor = c.onTertiaryContainer
+        )
+        else -> ButtonDefaults.buttonColors(
+            containerColor = c.secondaryContainer, contentColor = c.onSecondaryContainer
+        )
+    }
+}
+
+@Composable
+fun CalculatorScreen() {
+    var expression by remember { mutableStateOf("") }
+    var result by remember { mutableStateOf("") }
+    var degrees by remember { mutableStateOf(true) }
+    var justEvaluated by remember { mutableStateOf(false) }
+
+    val operators = setOf("+", "-", "×", "÷", "^", "%", "!", "^2")
+    val funcTokens = listOf("asin(", "acos(", "atan(", "sin(", "cos(", "tan(", "sqrt(", "log(", "ln(")
+
+    fun onKey(key: CalcKey) {
+        when (key.insert) {
+            "AC" -> { expression = ""; result = ""; justEvaluated = false }
+            "MODE" -> degrees = !degrees
+            "DEL" -> {
+                justEvaluated = false
+                val f = funcTokens.firstOrNull { expression.endsWith(it) }
+                expression = if (f != null) expression.dropLast(f.length) else expression.dropLast(1)
+            }
+            "=" -> {
+                if (expression.isNotEmpty()) {
+                    result = try {
+                        formatNumber(Parser(expression, degrees).parse())
+                    } catch (e: Exception) {
+                        "Error"
+                    }
+                    justEvaluated = true
+                }
+            }
+            else -> {
+                if (justEvaluated) {
+                    val base = if (result == "" || result == "Error") "" else result
+                    expression = if (key.insert in operators) base + key.insert else key.insert
+                    justEvaluated = false
+                } else {
+                    expression += key.insert
+                }
+            }
+        }
+    }
+
+    val rows = listOf(
+        listOf(CalcKey(if (degrees) "DEG" else "RAD", "MODE"), CalcKey("("), CalcKey(")"), CalcKey("⌫", "DEL"), CalcKey("AC")),
+        listOf(CalcKey("sin", "sin("), CalcKey("cos", "cos("), CalcKey("tan", "tan("), CalcKey("π"), CalcKey("e")),
+        listOf(CalcKey("sin⁻¹", "asin("), CalcKey("cos⁻¹", "acos("), CalcKey("tan⁻¹", "atan("), CalcKey("^"), CalcKey("!")),
+        listOf(CalcKey("log", "log("), CalcKey("ln", "ln("), CalcKey("√", "sqrt("), CalcKey("%"), CalcKey("x²", "^2")),
+        listOf(CalcKey("7"), CalcKey("8"), CalcKey("9"), CalcKey("÷")),
+        listOf(CalcKey("4"), CalcKey("5"), CalcKey("6"), CalcKey("×")),
+        listOf(CalcKey("1"), CalcKey("2"), CalcKey("3"), CalcKey("−", "-")),
+        listOf(CalcKey("0"), CalcKey("."), CalcKey("="), CalcKey("+"))
+    )
+
+    Column(modifier = Modifier.fillMaxSize().systemBarsPadding().padding(8.dp)) {
+        Column(
+            modifier = Modifier.weight(2f).fillMaxWidth().padding(8.dp),
+            verticalArrangement = Arrangement.Bottom,
+            horizontalAlignment = Alignment.End
+        ) {
+            Text(
+                text = expression,
+                fontSize = 28.sp,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.horizontalScroll(rememberScrollState(), reverseScrolling = true)
+            )
+            Text(
+                text = result,
+                fontSize = 40.sp,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.horizontalScroll(rememberScrollState(), reverseScrolling = true)
+            )
+        }
+        rows.forEach { row ->
+            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                row.forEach { key ->
+                    Button(
+                        onClick = { onKey(key) },
+                        modifier = Modifier.weight(1f).fillMaxHeight().padding(2.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = keyColors(key.insert),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(key.label, fontSize = if (key.label.length > 2) 14.sp else 20.sp)
+                    }
+                }
+            }
+        }
+    }
+}
